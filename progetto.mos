@@ -1,0 +1,105 @@
+!@encoding CP1252
+model ModelName
+uses "mmxprs", "mmive", "math"; 
+	forward procedure draw_sol !gain access to the Xpress-Optimizer solver
+
+! prova 1, solo programmazione lineare
+
+declarations
+	N : integer
+end-declarations
+
+initializations from "grafo.dat"
+	N
+end-initializations
+
+declarations
+  NODI  = 1..N
+  COSTS : array(NODI, NODI) of integer
+  path1 : array(NODI, NODI) of mpvar
+  path2 : array(NODI, NODI) of mpvar
+  costPath1 : real
+  costPath2 : real
+  xs  : array(NODI) of real ! per grafico
+  ys  : array(NODI) of real ! per grafico
+  pi  : real
+  
+  greatestCost : linctr
+end-declarations
+
+initializations from "grafo.dat"
+	COSTS
+end-initializations
+
+forall(i in NODI, j in NODI) do
+	path1(i,j) is_binary
+	path2(i,j) is_binary
+
+	path1(i, j) + path2(i, j) + path1(j, i) + path2(j, i) <= 1
+end-do
+
+forall(j in NODI) do
+	sum(i in NODI) path1(i, j) = 1
+	sum(i in NODI) path2(i, j) = 1
+end-do
+
+forall(i in NODI) do
+	path1(i, i) = 0
+	path2(i, i) = 0
+
+	sum(j in NODI) path1(i, j) = 1
+	sum(j in NODI) path2(i, j) = 1
+end-do
+
+sum(i in NODI, j in NODI) path1(i,j) = N
+sum(i in NODI, j in NODI) path2(i,j) = N
+
+greatestCost := sum(i in NODI, j in NODI) COSTS(i,j) * path2(i,j)
+
+sum(i in NODI, j in NODI) COSTS(i,j) * path1(i,j) <= greatestCost
+
+minimize(greatestCost)
+
+costPath2 := getsol(greatestCost)
+costPath1 := sum(i in NODI, j in NODI) COSTS(i,j) * getsol(path1(i,j))
+
+writeln(costPath2, " ", costPath1)
+
+draw_sol
+
+procedure draw_sol
+	IVEerase
+	IVEzoom(-1, 21, -1, 21)
+	
+	plot1 := IVEaddplot("percorso 1 = " + string(costPath1), IVE_RED) ! legenda
+	plot2 := IVEaddplot("percorso 2 = " + string(costPath2), IVE_BLUE) ! legenda
+	plot0 := IVEaddplot("Nodi", IVE_BLACK)
+	
+	pi := 22/7 ! this is just pi
+
+	forall(i in NODI) do
+		xs(i) := 10 + 8 * cos(2*pi*i / N)
+		ys(i) := 10 + 8 * sin(2*pi*i / N)
+	end-do
+	
+	forall(i in NODI) IVEdrawpoint(plot0, xs(i), ys(i))
+
+	forall(i in NODI, j in NODI | i <> j and getsol(path1(i, j))=1) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot1, xs(i), ys(i), xs(j), ys(j))
+	end-do
+
+	forall(i in NODI, j in NODI | i <> j and getsol(path2(i, j))=1) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot2, xs(i), ys(i), xs(j), ys(j))
+	end-do
+	
+	forall(i in NODI, j in NODI | i <> j and getsol(path1(i, j)) = 0 and getsol(path2(i, j)) = 0 and
+								  getsol(path1(j, i)) = 0 and getsol(path2(j, i)) = 0) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot0, xs(i), ys(i), xs(j), ys(j))
+	end-do
+end-procedure
+
+
+end-model
