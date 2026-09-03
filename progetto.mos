@@ -63,7 +63,7 @@ minimize(greatestCost)
 costPath2 := getsol(greatestCost)
 costPath1 := sum(i in NODI, j in NODI) COSTS(i,j) * getsol(path1(i,j))
 
-writeln(costPath2, " ", costPath1)
+writeln("costo path 1: ", costPath1, "\ncosto path 2: ", costPath2)
 
 draw_sol
 
