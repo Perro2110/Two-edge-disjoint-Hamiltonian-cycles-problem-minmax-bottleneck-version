@@ -1,0 +1,234 @@
+!@encoding CP1252
+model LBBD_Strong
+uses "mmxprs", "mmive", "math"
+
+forward procedure draw_sol
+forward procedure fix_S2
+forward procedure free_S2
+forward procedure tsp_without_B
+
+! Logic-based Benders:
+!  master:      S2 (path2) hamiltoniano, min c(S2), + tagli
+!  sottoproblema: S1 (path1) = TSP su G \ B, B sottoinsieme degli archi di S2
+!  taglio forte: c(S2') >= vB * (1 - sum_{e in B}(1 - x_e))
+
+declarations
+	N : integer
+end-declarations
+
+initializations from "grafo.dat"
+	N
+end-initializations
+
+declarations
+	NODI = 1..N
+	COSTS : array(NODI, NODI) of integer
+	path1 : array(NODI, NODI) of mpvar
+	path2 : array(NODI, NODI) of mpvar
+	pathsol1 : array(NODI, NODI) of real
+	pathsol2 : array(NODI, NODI) of real
+	costPath1 : real
+	costPath2 : real
+	xs : array(NODI) of real
+	ys : array(NODI) of real
+	pi : real
+
+	u1 : array(NODI) of mpvar
+	u2 : array(NODI) of mpvar
+
+	greatestCost, subProblem : linctr
+	cutc : array(range) of linctr
+
+	af, at : array(NODI) of integer      ! archi di S2
+	inB : array(NODI) of boolean         ! arco k di S2 in B
+	feas, notOk, master_ok : boolean
+	val, vB : real
+	na, nB, ncut, iter : integer
+	st : integer
+	BIGV = 1000000000.0
+end-declarations
+
+initializations from "grafo.dat"
+	COSTS
+end-initializations
+
+u2(1) = 0
+forall(i in NODI | i <> 1) do
+	u2(i) >= 1
+	u2(i) <= N - 1
+end-do
+
+forall(i in NODI, j in NODI | i<>j and i<>1 and j<>1)
+	u2(i) - u2(j) + (N-1)*path2(i, j) <= N - 2
+
+forall(i in NODI, j in NODI) do
+	path2(i,j) is_binary
+	path2(i,j) + path2(j,i) <= 1
+end-do
+
+forall(j in NODI) sum(i in NODI) path2(i, j) = 1
+forall(i in NODI) do
+	path2(i, i) = 0
+	sum(j in NODI) path2(i, j) = 1
+end-do
+
+greatestCost := sum(i in NODI, j in NODI) COSTS(i,j) * path2(i,j)
+
+u1(1) = 0
+forall(i in NODI | i <> 1) do
+	u1(i) >= 1
+	u1(i) <= N - 1
+end-do
+
+forall(i in NODI, j in NODI | i<>j and i<>1 and j<>1)
+	u1(i) - u1(j) + (N-1)*path1(i, j) <= N - 2
+
+forall(i in NODI, j in NODI) path1(i,j) is_binary
+
+forall(j in NODI) sum(i in NODI) path1(i, j) = 1
+forall(i in NODI) do
+	path1(i, i) = 0
+	sum(j in NODI) path1(i, j) = 1
+end-do
+
+subProblem := sum(i in NODI, j in NODI) COSTS(i,j) * path1(i,j)
+
+notOk := true
+master_ok := true
+ncut := 0
+iter := 0
+
+while (notOk) do
+	iter += 1
+
+	! master: tutti i bound di path1 liberi (non servono qui)
+	forall(i in NODI, j in NODI) setub(path1(i,j), 1)
+
+	minimize(greatestCost)
+	if getprobstat <> XPRS_OPT then
+		writeln("Master infeasible: problema originale infeasible")
+		master_ok := false
+		break
+	end-if
+	costPath2 := getsol(greatestCost)
+
+	! estrae gli archi di S2
+	na := 0
+	forall(i in NODI, j in NODI) do
+		pathsol2(i,j) := getsol(path2(i,j))
+		if pathsol2(i,j) > 0.5 then
+			na += 1
+			af(na) := i
+			at(na) := j
+		end-if
+	end-do
+
+	! sottoproblema con B = S2 completo, S2 fissato
+	fix_S2
+	forall(k in NODI) inB(k) := true
+	tsp_without_B
+
+	if feas and val <= costPath2 + 0.0001 then
+		! ottimo: salva S1 e termina
+		forall(i in NODI, j in NODI) pathsol1(i,j) := getsol(path1(i,j))
+		costPath1 := val
+		notOk := false
+		free_S2
+	else
+		vB := val
+		! rafforzamento: prova a togliere ogni arco da B
+		forall(k in NODI) do
+			inB(k) := false
+			tsp_without_B
+			if (not feas) or val > costPath2 + 0.0001 then
+				vB := val              ! rimozione accettata
+			else
+				inB(k) := true         ! arco necessario, resta in B
+			end-if
+		end-do
+		free_S2
+
+		nB := sum(k in NODI | inB(k)) 1
+		ncut += 1
+		if vB >= BIGV then
+			! G\B non hamiltoniano: no-good su B
+			cutc(ncut) := sum(k in NODI | inB(k)) path2(af(k), at(k)) <= nB - 1
+		else
+			! c.x >= vB*(1 - sum_B(1-x))  <=>  c.x - vB*sum_B x >= vB*(1-|B|)
+			cutc(ncut) := sum(i in NODI, j in NODI) COSTS(i,j)*path2(i,j) - vB * sum(k in NODI | inB(k)) path2(af(k), at(k)) >= vB * (1 - nB)
+		end-if
+		writeln("iter ", iter, "  c(S2)=", costPath2, "  |B|=", nB, "  vB=", vB)
+	end-if
+end-do
+
+if master_ok then
+	writeln("\nOTTIMO  costo path 1: ", costPath1, "  costo path 2: ", costPath2, "  iterazioni: ", iter)
+	draw_sol
+end-if
+
+
+procedure fix_S2
+	forall(i in NODI, j in NODI) do
+		setlb(path2(i,j), round(pathsol2(i,j)))
+		setub(path2(i,j), round(pathsol2(i,j)))
+	end-do
+end-procedure
+
+procedure free_S2
+	forall(i in NODI, j in NODI) do
+		setlb(path2(i,j), 0)
+		setub(path2(i,j), 1)
+	end-do
+end-procedure
+
+procedure tsp_without_B
+	forall(i in NODI, j in NODI) setub(path1(i,j), 1)
+	forall(k in NODI | inB(k)) do
+		setub(path1(af(k), at(k)), 0)
+		setub(path1(at(k), af(k)), 0)
+	end-do
+	minimize(subProblem)
+
+	if getprobstat <> XPRS_OPT then
+		val := BIGV
+	else
+		val := getsol(subProblem)
+		writeln("feasable ", val)
+	end-if
+end-procedure
+
+procedure draw_sol
+	IVEerase
+	IVEzoom(-1, 21, -1, 21)
+
+	plot1 := IVEaddplot("percorso 1 = " + string(costPath1), IVE_RED)
+	plot2 := IVEaddplot("percorso 2 = " + string(costPath2), IVE_BLUE)
+	plot0 := IVEaddplot("Nodi", IVE_BLACK)
+
+	pi := 22/7
+
+	forall(i in NODI) do
+		xs(i) := 10 + 8 * cos(2*pi*i / N)
+		ys(i) := 10 + 8 * sin(2*pi*i / N)
+	end-do
+
+	forall(i in NODI) IVEdrawpoint(plot0, xs(i), ys(i))
+
+	forall(i in NODI, j in NODI | i <> j and pathsol1(i, j) > 0.5) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot1, xs(i), ys(i), xs(j), ys(j))
+	end-do
+
+	forall(i in NODI, j in NODI | i <> j and pathsol2(i, j) > 0.5) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot2, xs(i), ys(i), xs(j), ys(j))
+	end-do
+
+	forall(i in NODI, j in NODI | i < j and pathsol1(i, j) < 0.5 and pathsol2(i, j) < 0.5 and
+	                              pathsol1(j, i) < 0.5 and pathsol2(j, i) < 0.5) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot0, xs(i), ys(i), xs(j), ys(j))
+	end-do
+end-procedure
+
+end-model

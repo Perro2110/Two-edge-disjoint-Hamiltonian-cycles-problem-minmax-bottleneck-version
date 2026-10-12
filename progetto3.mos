@@ -1,0 +1,178 @@
+!@encoding CP1252
+model ModelName
+uses "mmxprs", "mmive", "math"; 
+	forward procedure draw_sol !gain access to the Xpress-Optimizer solver
+
+! prova 2, solo programmazione lineare con fix tattico dei sottotour
+
+declarations
+	N : integer
+end-declarations
+
+initializations from "grafo.dat"
+	N
+end-initializations
+
+declarations
+  NODI  = 1..N
+  COSTS : array(NODI, NODI) of integer
+  path1 : array(NODI, NODI) of mpvar
+  path2 : array(NODI, NODI) of mpvar
+  pathsol2 : array(NODI, NODI) of real
+  costPath1 : real
+  costPath2 : real
+  xs  : array(NODI) of real ! per grafico
+  ys  : array(NODI) of real ! per grafico
+  pi  : real
+  
+  u1 : array(NODI) of mpvar ! Miller-Tucker-Zemlin 
+  u2 : array(NODI) of mpvar ! Subtour Elimination Constraints
+  
+  cuts : array(NODI) of linctr
+  upperBound : linctr
+  
+  notOk : boolean
+  greatestCost, subProblem : linctr
+end-declarations
+
+initializations from "grafo.dat"
+	COSTS
+end-initializations
+
+u2(1) = 0
+
+forall(i in NODI | i <> 1) do
+	u2(i) >= 1
+	u2(i) <= N - 1
+end-do
+
+forall(i in NODI, j in NODI | i<>j and i<>1 and j<>1) do
+	u2(i) - u2(j) + (N-1)*path2(i, j) <= N - 2
+end-do
+
+forall(i in NODI, j in NODI) do
+	path2(i,j) is_binary
+	
+	path2(i, j) + path2(j, i) <= 1
+end-do
+
+forall(j in NODI) do
+	sum(i in NODI) path2(i, j) = 1
+end-do
+
+forall(i in NODI) do
+	path2(i, i) = 0
+
+	sum(j in NODI) path2(i, j) = 1
+end-do
+
+greatestCost := sum(i in NODI, j in NODI) COSTS(i,j) * path2(i,j)
+
+u1(1) = 0
+
+forall(i in NODI | i <> 1) do
+	u1(i) >= 1
+	u1(i) <= N - 1
+end-do
+
+forall(i in NODI, j in NODI | i<>j and i<>1 and j<>1) do
+	u1(i) - u1(j) + (N-1)*path1(i, j) <= N - 2
+end-do
+
+forall(i in NODI, j in NODI) do
+	path1(i,j) is_binary
+	
+	path1(i, j) + path2(i, j) + path1(j, i) + path2(j, i) <= 1
+end-do
+
+forall(j in NODI) do
+	sum(i in NODI) path1(i, j) = 1
+end-do
+
+forall(i in NODI) do
+	path1(i, i) = 0
+
+	sum(j in NODI) path1(i, j) = 1
+end-do
+
+notOk := true
+subProblem := sum(i in NODI, j in NODI) COSTS(i,j) * path1(i,j)
+
+while(notOk) do
+
+	upperBound := 0
+	forall(k in NODI) cuts(k) := 0
+
+	minimize(greatestCost)
+	costPath2 := getsol(greatestCost)
+	
+	forall(i in NODI, j in NODI) do 
+		pathsol2(i,j) := getsol(path2(i,j))
+	end-do
+	
+	k := 1
+	forall(i in NODI, j in NODI | i>=j and (pathsol2(i, j) = 1 or pathsol2(j, i) = 1)) do
+		cuts(k) := path1(i, j) + pathsol2(i, j) + path1(j, i) + pathsol2(j, i) <= 1
+		k := k + 1
+	end-do
+	
+	upperBound := sum(i in NODI, j in NODI) (COSTS(i, j) * path1(i, j)) <= costPath2
+	minimize(subProblem)
+	
+ 	st := getprobstat
+	
+	if st <> XPRS_OPT then
+		writeln("Error 1: Not valid path found")
+
+		sum(i in NODI, j in NODI | pathsol2(i, j) = 1) (path2(i, j) + path2(j, i)) <= N - 1
+	elif (getsol(subProblem) <= costPath2) then
+		notOk := false
+	else
+		writeln("Error 2: Not valid path found: ")
+	
+		sum(i in NODI, j in NODI | pathsol2(i, j) = 1) (path2(i, j) + path2(j, i)) <= N - 1
+	end-if
+
+	writeln("\ncosto path 1: ", getsol(subProblem), "\ncosto path 2: ", costPath2)
+end-do
+
+costPath1 := getsol(subProblem)
+
+draw_sol
+
+procedure draw_sol
+	IVEerase
+	IVEzoom(-1, 21, -1, 21)
+	
+	plot1 := IVEaddplot("percorso 1 = " + string(costPath1), IVE_RED) ! legenda
+	plot2 := IVEaddplot("percorso 2 = " + string(costPath2), IVE_BLUE) ! legenda
+	plot0 := IVEaddplot("Nodi", IVE_BLACK)
+	
+	pi := 22/7 ! this is just pi
+
+	forall(i in NODI) do
+		xs(i) := 10 + 8 * cos(2*pi*i / N)
+		ys(i) := 10 + 8 * sin(2*pi*i / N)
+	end-do
+	
+	forall(i in NODI) IVEdrawpoint(plot0, xs(i), ys(i))
+
+	forall(i in NODI, j in NODI | i <> j and getsol(path1(i, j))=1) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot1, xs(i), ys(i), xs(j), ys(j))
+	end-do
+
+	forall(i in NODI, j in NODI | i <> j and pathsol2(i, j)=1) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot2, xs(i), ys(i), xs(j), ys(j))
+	end-do
+	
+	forall(i in NODI, j in NODI | i <> j and getsol(path1(i, j)) = 0 and pathsol2(i, j) = 0 and
+								  getsol(path1(j, i)) = 0 and pathsol2(j, i) = 0) do
+		IVEdrawlabel(plot0, (xs(i) + xs(j)) / 2, (ys(i) + ys(j)) / 2, string(COSTS(i, j)))
+		IVEdrawline(plot0, xs(i), ys(i), xs(j), ys(j))
+	end-do
+end-procedure
+
+
+end-model
